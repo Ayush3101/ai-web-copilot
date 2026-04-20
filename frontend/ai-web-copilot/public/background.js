@@ -1,3 +1,3 @@
 chrome.runtime.onInstalled.addListener(() => {
-    console.log("AI Copilot Installed");
-  });
+  console.log("AI Copilot Installed");
+});

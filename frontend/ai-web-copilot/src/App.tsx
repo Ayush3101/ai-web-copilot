@@ -1,12 +1,48 @@
-import { useEffect, useState } from "react";
+/// <reference types="chrome" />
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ChatComposer } from "./components/chat/ChatComposer";
+import {
+  ChatMessages,
+  type ChatMessage,
+} from "./components/chat/ChatMessages";
+
+type PageData = {
+  title?: string;
+  url?: string;
+  content?: string;
+};
+
+function makeId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+const SAMPLE_MESSAGES: ChatMessage[] = [
+  {
+    id: "sample-a1",
+    role: "assistant",
+    text: "Hi — I’m AI Web Copilot. I read the active tab and can answer questions about what you’re looking at.",
+  },
+  {
+    id: "sample-u1",
+    role: "user",
+    text: "What should I ask you?",
+  },
+  {
+    id: "sample-a2",
+    role: "assistant",
+    text: "Try something like “Summarize this page” or “What are the risks called out in the reviews?” — then hit Send below.",
+  },
+];
 
 function App() {
-  const [pageData, setPageData] = useState<any>(null);
+  const [pageData, setPageData] = useState<PageData | null>(null);
   const [query, setQuery] = useState("");
-  const [response, setResponse] = useState("");
+  const [messages, setMessages] = useState<ChatMessage[]>(() => [
+    ...SAMPLE_MESSAGES,
+  ]);
   const [loading, setLoading] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Listen for page data from content script
   useEffect(() => {
     if (
       typeof chrome === "undefined" ||
@@ -22,86 +58,109 @@ function App() {
       chrome.tabs.sendMessage(
         tabs[0].id,
         { type: "GET_PAGE_DATA" },
-        (response) => {
+        (response: PageData | undefined) => {
           if (chrome.runtime.lastError) {
             console.error("Error:", chrome.runtime.lastError.message);
             return;
           }
 
-          setPageData(response);
+          if (response) setPageData(response);
         },
       );
     });
   }, []);
 
-  const handleAsk = async () => {
-    if (!query) return;
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages, loading]);
+
+  const handleAsk = useCallback(async () => {
+    const text = query.trim();
+    if (!text) return;
+
+    const userMessage: ChatMessage = {
+      id: makeId(),
+      role: "user",
+      text,
+    };
+    setMessages((m) => [...m, userMessage]);
+    setQuery("");
 
     setLoading(true);
 
     try {
-      const res = await fetch("http://localhost:5000/analyze", {
+      const res = await fetch("http://localhost:5001/analyze", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          query,
+          query: text,
           pageData,
         }),
       });
 
-      const data = await res.json();
-      setResponse(data.result);
-    } catch (err) {
-      setResponse("Error fetching response");
-    }
+      const data = (await res.json()) as { result?: string; message?: string };
+      const reply =
+        typeof data.result === "string"
+          ? data.result
+          : typeof data.message === "string"
+            ? data.message
+            : "No reply from server.";
 
-    setLoading(false);
-  };
+      setMessages((m) => [
+        ...m,
+        { id: makeId(), role: "assistant", text: reply },
+      ]);
+    } catch {
+      setMessages((m) => [
+        ...m,
+        {
+          id: makeId(),
+          role: "assistant",
+          text: "Error fetching response",
+        },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  }, [query, pageData]);
+
+  const canSend = query.trim().length > 0;
+  const inputDisabled = !pageData;
 
   return (
-    <div className="p-4 w-[350px]">
-      <h1 className="text-xl font-bold text-blue-500 mb-3">
-        AI Web Copilot 🚀
-      </h1>
+    <div className="flex h-full min-h-0 w-full min-w-[360px] max-w-[400px] flex-1 flex-col bg-slate-950 text-slate-100 antialiased">
+      <header className="shrink-0 border-b border-slate-800/90 bg-slate-900/95 px-4 py-3.5 backdrop-blur-sm">
+        <h1 className="text-[17px] font-semibold leading-tight tracking-tight text-white">
+          AI Web Copilot
+        </h1>
+        {pageData?.title ? (
+          <p
+            className="mt-1.5 line-clamp-2 text-[13px] leading-snug text-slate-400"
+            title={pageData.title}
+          >
+            {pageData.title}
+          </p>
+        ) : (
+          <p className="mt-1.5 text-[13px] leading-snug text-slate-500">
+            Unable to read page — refresh the tab and reopen the popup.
+          </p>
+        )}
+      </header>
 
-      {/* Page Info */}
-      {pageData ? (
-        <div className="text-sm mb-2">
-          <p className="font-semibold">Page:</p>
-          <p className="truncate">{pageData.title}</p>
-        </div>
-      ) : (
-        <p className="text-xs text-gray-500 mb-2">
-          Unable to read page. Try refreshing.
-        </p>
-      )}
+      <ChatMessages ref={scrollRef} messages={messages} loading={loading} />
 
-      {/* Input */}
-      <textarea
-        placeholder="Ask anything about this page..."
-        className="w-full border rounded p-2 text-sm"
+      <ChatComposer
         value={query}
-        onChange={(e) => setQuery(e.target.value)}
+        onChange={setQuery}
+        onSend={() => void handleAsk()}
+        disabled={inputDisabled}
+        loading={loading}
+        canSend={canSend}
       />
-
-      {/* Button */}
-      <button
-        onClick={handleAsk}
-        disabled={!pageData || loading}
-        className="mt-2 bg-blue-500 text-white px-3 py-1 rounded w-full disabled:opacity-50"
-      >
-        {loading ? "Thinking..." : "Ask AI"}
-      </button>
-
-      {/* Response */}
-      {response && (
-        <div className="mt-3 text-sm border-t pt-2">
-          <p className="font-semibold">Response:</p>
-          <p>{response}</p>
-        </div>
-      )}
     </div>
   );
 }
